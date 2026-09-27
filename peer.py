@@ -1,8 +1,67 @@
 import json
 import socket
 import sys
+import threading
 
 
+
+def configure_ring(state, peer_id, ring):
+    """save the peer's id, ring members, and its right neighbor"""
+    state["id"] = peer_id
+    state["n"] = len(ring)
+    state["ring"] = ring
+
+    right_id = (peer_id + 1) % len(ring)
+    state["right"] = ring[right_id]
+
+    print(
+        f"\nRing configured: ID={peer_id}, "
+        f"size={state['n']}, right neighbor={state['right'][0]}",
+        flush=True
+    )
+
+def listen_to_peers(p_socket, state):
+    """now receive peer messages while the main thread accepts concurrent commands"""
+    while True:
+        try:
+            data, sender = p_socket.recvfrom(65535)
+        except OSError:
+            return
+
+        try:
+            message = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            print("\nERROR: invalid peer message")
+            continue
+
+        if not isinstance(message, dict):
+            print("\nERROR: expected json object")
+            continue
+
+        print(f"\nRECV from peer {sender}: {message}", flush=True)
+
+        if message.get("command") == "set-id":
+            configure_ring(state, message["id"], message["peers"])
+        else:
+            print("ERROR: unknown peer command", flush=True)
+
+def build_ring(p_socket, state, ring):
+    """configure the leader and send ids to the other peers"""
+    configure_ring(state, 0, ring)
+
+    for peer_id in range(1, len(ring)):
+        peer_name, peer_ip, peer_port = ring[peer_id]
+
+        message = {
+            "command": "set-id",
+            "id": peer_id,
+            "n": len(ring),
+            "peers": ring
+        }     
+
+        data = json.dumps(message).encode("utf-8")
+        p_socket.sendto(data, (peer_ip, peer_port))
+        print(f"SEND to {peer_name}: {message}", flush=True)
 
 def main():
     if len(sys.argv) != 3:
@@ -16,6 +75,13 @@ def main():
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as m_socket:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as p_socket:
             registered = False
+
+            state = {
+                "id": None,
+                "n": 0,
+                "ring": [],
+                "right": None
+            }
 
             while True:
                 parts = input("peer> ").split()
@@ -66,6 +132,7 @@ def main():
                     if response["status"] == "SUCCESS":
                         ring = response["peers"]
                         print(f"selected ring members: {ring}")
+                        build_ring(p_socket, state, ring)
 
                     continue
 
@@ -134,6 +201,13 @@ def main():
                 if response["status"] == "SUCCESS":
                     registered = True
                     print(f"{name} registered successfully")
+
+                    listener = threading.Thread(
+                        target=listen_to_peers,
+                        args=(p_socket, state),
+                        daemon=True
+                    )
+                    listener.start()
                 else:
                     print("ERROR: registration failed. correct the values")
                     return
