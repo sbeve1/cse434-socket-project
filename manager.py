@@ -104,5 +104,5 @@ def main():
             print(f"SEND to {sender}: {response}", flush=True)
             print(f"Registered peers: {peers}", flush=True)
                 
-if __name__ == "main":
+if __name__ == "__main__":
     main()
