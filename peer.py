@@ -23,14 +23,58 @@ def main():
                 if not parts:
                     continue
 
-                if len(parts) != 5:
-                    print("use register <name> <ip> <m-port> <p-port>")
-                    continue
-
                 command = parts[0]
 
+                if command == "setup-dht":
+                    if not registered:
+                        print("ERROR: you need to register first")
+                        continue
+                    if len(parts) != 4:
+                        print("ERROR: use setup-dht <peer-name> <n> <year>")
+                        continue
+                    if parts[1] != name:
+                        print("ERROR: use this peer's registered name")
+                        continue
+
+                    try:
+                        n = int(parts[2])
+                        year = int(parts[3])
+                    except ValueError:
+                        print("ERROR: size and year must be integers")
+                        continue
+
+                    message = {
+                        "command": "setup-dht",
+                        "name": name,
+                        "n": n,
+                        "year": year
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+    
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("ERROR: no response from the manager")
+                        continue
+    
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+    
+                    if response["status"] == "SUCCESS":
+                        ring = response["peers"]
+                        print(f"selected ring members: {ring}")
+
+                    continue
+
                 if command != "register":
-                    print("only register is implemented so far")
+                    print("ERROR: unknown command")
+                    continue
+
+                if len(parts) != 5:
+                    print("use register <name> <ip> <m-port> <p-port>")
                     continue
 
                 if registered:
