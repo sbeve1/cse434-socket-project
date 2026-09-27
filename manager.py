@@ -61,48 +61,48 @@ def register(message, peers, manager_port):
     }
     return {"status": "SUCCESS"}
 
-    def main():
-        if len(sys.argv) != 2:
-            sys.exit("ERROR: Usage: python3 manager.py <port>")
+def main():
+    if len(sys.argv) != 2:
+        sys.exit("ERROR: Use python3 manager.py <port>")
 
-        port = int(sys.argv[1])
-        if not 29500 <= port <= 29999:
-            sys.exit("ERROR: Group 57 must use ports 29500-29999")
+    port = int(sys.argv[1])
+    if not 29500 <= port <= 29999:
+        sys.exit("ERROR: Group 57 must use ports 29500-29999")
 
-        peers = {}
+    peers = {}
 
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-            sock.bind(("0.0.0.0", port))
-            print(f"Manager listening on UDP port {port}", flush=True)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.bind(("0.0.0.0", port))
+        print(f"Manager listening on UDP port {port}", flush=True)
 
-            while True:
-                data, sender = sock.recvfrom(65535)
-                print(f"RECV from {sender}: {data}", flush=True)
+        while True:
+            data, sender = sock.recvfrom(65535)
+            print(f"RECV from {sender}: {data}", flush=True)
 
-                try:
-                    message = json.loads(data.decode("utf-8"))
+            try:
+                message = json.loads(data.decode("utf-8"))
 
-                    if not isinstance(message, dict):
-                        response = {
-                            "status": "FAILURE",
-                            "reason": "Expected JSON object"
-                        }
-                    elif message.get("command") == "register":
-                        response = register(message, peers, port)
-                    else:
-                        response = {
-                            "status": "FAILURE",
-                            "reason": "This command isn't supported"
-                        }
-                except (UnicodeDecodeError, json.JSONDecodeError):
+                if not isinstance(message, dict):
                     response = {
                         "status": "FAILURE",
-                        "reason": "Invalid JSON"
+                        "reason": "Expected JSON object"
                     }
+                elif message.get("command") == "register":
+                    response = register(message, peers, port)
+                else:
+                    response = {
+                        "status": "FAILURE",
+                        "reason": "This command isn't supported"
+                    }
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                response = {
+                    "status": "FAILURE",
+                    "reason": "Invalid JSON"
+                }
 
-                sock.sendto(json.dumps(response).encode("utf-8"), sender)
-                print(f"SEND to {sender}: {response}", flush=True)
-                print(f"Registered peers: {peers}", flush=True)
-                    
+            sock.sendto(json.dumps(response).encode("utf-8"), sender)
+            print(f"SEND to {sender}: {response}", flush=True)
+            print(f"Registered peers: {peers}", flush=True)
+                
 if __name__ == "main":
     main()
