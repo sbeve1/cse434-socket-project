@@ -118,6 +118,7 @@ def listen_to_peers(p_socket, state):
                     "command": "stored",
                     "event_id": event_id
                 }
+                send_right(p_socket, state, reply)
 
             elif state["id"] == 0:
                 print("ERROR: Unstored record returned to leader", flush=True)
@@ -131,14 +132,14 @@ def listen_to_peers(p_socket, state):
             else:
                 message["counts"].append({
                     "id": state["id"],
-                    "conut": state["count"]
+                    "count": state["count"]
                 })
                 send_right(p_socket, state, message)
 
         else:
             print("ERROR: unknown peer command", flush=True)
 
-def build_ring(p_socket, state, ring):
+def build_ring(p_socket, state, ring, table_size):
     """configure all the peers before record distribution"""
     configure_ring(state, 0, ring)
 
