@@ -2,6 +2,7 @@ import json
 import socket
 import sys
 import threading
+import csv
 
 
 
@@ -63,6 +64,36 @@ def build_ring(p_socket, state, ring):
         p_socket.sendto(data, (peer_ip, peer_port))
         print(f"SEND to {peer_name}: {message}", flush=True)
 
+def next_prime(number):
+    """Helper to return the first prime strictly greater than the number"""
+    candidate = number + 1
+
+    while True:
+        is_prime = candidate >= 2
+
+        divisor = 2
+        while divisor * divisor <= candidate:
+            if candidate % divisor == 0:
+                is_prime = False
+                break
+            divisor += 1
+
+        if is_prime:
+            return candidate
+
+        candidate += 1
+
+def load_records(year):
+    """Read the csv while keeping the fields of the records"""
+    filename = f"details-{year}.csv"
+
+    with open(filename, encoding="utf-8", newline="") as infile:
+        reader = csv.DictReader(infile)
+        records = list(reader)
+
+    table_size = next_prime(2 * len(records))
+    return records, table_size
+
 def main():
     if len(sys.argv) != 3:
         sys.exit("ERROR: Use python3 peer.py <manager-ip> <manager-port>")
@@ -109,6 +140,18 @@ def main():
                         print("ERROR: size and year must be integers")
                         continue
 
+                    try:
+                        records, table_size = load_records(year)
+                    except (OSError, csv.Error) as error:
+                        print(f"ERROR: Could not read dataset: {error}")
+                        continue
+
+                    print(
+                        f"Loaded {len(records)} records; "
+                        f"hash table size={table_size}",
+                        flush=True,
+                    )
+
                     message = {
                         "command": "setup-dht",
                         "name": name,
@@ -133,6 +176,16 @@ def main():
                         ring = response["peers"]
                         print(f"selected ring members: {ring}")
                         build_ring(p_socket, state, ring)
+
+                        expected_counts = [0] * len(ring)
+
+                        for record in records:
+                            event_id = int(record["EVENT_ID"])
+                            pos = event_id % table_size
+                            owner = pos % len(ring)
+                            expected_counts[owner] += 1
+
+                        print(f"Expected record counts: {expected_counts}")
 
                     continue
 
