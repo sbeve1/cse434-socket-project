@@ -3,17 +3,41 @@ import socket
 import sys
 import threading
 import csv
+import queue
+
+def send_peer(p_socket, address, message):
+    """encode and send a peer message"""
+    data = json.dumps(message).encode("utf-8")
+    p_socket.sendto(data, address)
+    print(f"SEND to peer {address}: {message}", flush=True)
 
 
+def send_right(p_socket, state, message):
+    """forward a message to the next peer in the ring"""
+    name, ip, port = state["right"]
+    send_peer(p_socket, (ip, port), message)
 
-def configure_ring(state, peer_id, ring):
+
+def wait_for_reply(state, command, key, value):
+    """wait for the listener to deliver the expected confirmation"""
+    while True:
+        try:
+            message = state["replies"].get(timeout=5)
+        except queue.Empty:
+            raise TimeoutError(f"No confirmation for {command}: {value}")
+
+        if message["command"] == command and message.get(key) == value:
+            return message
+
+def configure_ring(state, peer_id, ring, table_size):
     """save the peer's id, ring members, and its right neighbor"""
     state["id"] = peer_id
     state["n"] = len(ring)
     state["ring"] = ring
-
-    right_id = (peer_id + 1) % len(ring)
-    state["right"] = ring[right_id]
+    state["right"] = ring[(peer_id + 1) % len(ring)]
+    state["table_size"] = table_size
+    state["table"] = [[] for _ in range(table_size)] # each position has a lits to handle hash collisions
+    state["count"] = 0
 
     print(
         f"\nRing configured: ID={peer_id}, "
@@ -21,8 +45,26 @@ def configure_ring(state, peer_id, ring):
         flush=True
     )
 
+def store_local(state, pos, record):
+    """store a record without overwriting other records at the same position"""
+    bucket = state["table"][pos]
+
+    # don't count the same event if it arrived already
+    for existing in bucket:
+        if existing["EVENT_ID"] == record["EVENT_ID"]:
+            return
+
+    bucket.append(record)
+    state["count"] += 1
+
+    print(
+        f"STORED event={record['EVENT_ID']} "
+        f"at peer={state['id']}, position={pos}",
+        flush=True,
+    )
+
 def listen_to_peers(p_socket, state):
-    """now receive peer messages while the main thread accepts concurrent commands"""
+    """handle peer messages while the main thread accepts commands"""
     while True:
         try:
             data, sender = p_socket.recvfrom(65535)
@@ -32,37 +74,138 @@ def listen_to_peers(p_socket, state):
         try:
             message = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            print("\nERROR: invalid peer message")
+            print("\nERROR: invalid peer message", flush=True)
             continue
 
         if not isinstance(message, dict):
-            print("\nERROR: expected json object")
+            print("\nERROR: expected json object", flush=True)
             continue
 
         print(f"\nRECV from peer {sender}: {message}", flush=True)
+        command = message.get("command")
 
-        if message.get("command") == "set-id":
-            configure_ring(state, message["id"], message["peers"])
+        if command == "set-id":
+            configure_ring(
+                state, 
+                message["id"], 
+                message["peers"],
+                message["table_size"]
+            )
+
+            # confirm the config by forwarding to the right eventually reaching the leader
+            reply = {
+                "command": "ready",
+                "id": state["id"]
+            }
+            send_right(p_socket, state, reply)
+
+        elif command in ("ready", "stored"):
+            if state["id"] == 0:
+                state["replies"].put(message)
+            else:
+                send_right(p_socket, state, message)
+
+        elif command == "store":
+            record = message["record"]
+            event_id = int(record["EVENT_ID"])
+            pos = event_id % state["table_size"]
+            owner = pos % state["n"]
+
+            if owner == state["id"]:
+                store_local(state, pos, record)
+
+                reply = {
+                    "command": "stored",
+                    "event_id": event_id
+                }
+
+            elif state["id"] == 0:
+                print("ERROR: Unstored record returned to leader", flush=True)
+
+            else:
+                send_right(p_socket, state, message)
+
+        elif command == "collect-counts":
+            if state["id"] == 0:
+                state["replies"].put(message)
+            else:
+                message["counts"].append({
+                    "id": state["id"],
+                    "conut": state["count"]
+                })
+                send_right(p_socket, state, message)
+
         else:
             print("ERROR: unknown peer command", flush=True)
 
 def build_ring(p_socket, state, ring):
-    """configure the leader and send ids to the other peers"""
+    """configure all the peers before record distribution"""
     configure_ring(state, 0, ring)
 
-    for peer_id in range(1, len(ring)):
+
+    # working backward to ensure right is already configured
+    for peer_id in range(len(ring) - 1, 0, -1):
         peer_name, peer_ip, peer_port = ring[peer_id]
 
         message = {
             "command": "set-id",
             "id": peer_id,
             "n": len(ring),
-            "peers": ring
+            "peers": ring,
+            "table_size": table_size
         }     
 
-        data = json.dumps(message).encode("utf-8")
-        p_socket.sendto(data, (peer_ip, peer_port))
-        print(f"SEND to {peer_name}: {message}", flush=True)
+        send_peer(p_socket, (peer_ip, peer_port), message)
+        wait_for_reply(state, "ready", "id", peer_id)
+
+    print("All peers confirmed ring config", flush=True)
+
+def distribute_records(p_socket, state, records):
+    """store each record at its owner, using the ring for forwarding."""
+    expected_counts = [0] * state["n"]
+
+    for record in records:
+        event_id = int(record["EVENT_ID"])
+        pos = event_id % state["table_size"]
+        owner = pos % state["n"]
+        expected_counts[owner] += 1
+
+        if owner == state["id"]:
+            store_local(state, pos, record)
+        else:
+            message = {
+                "command": "store",
+                "record": record,
+            }
+            send_right(p_socket, state, message)
+            wait_for_reply(state, "stored", "event_id", event_id)
+
+    # collect the actual counts only after every record has been confirmed as stored
+    message = {
+        "command": "collect-counts",
+        "counts": [{"id": state["id"], "count": state["count"]}],
+    }
+    send_right(p_socket, state, message)
+    result = wait_for_reply(
+        state, "collect-counts", "command", "collect-counts"
+    )
+
+    actual_counts = [0] * state["n"]
+    for entry in result["counts"]:
+        actual_counts[entry["id"]] = entry["count"]
+
+    if actual_counts != expected_counts:
+        raise ValueError(
+            f"Record counts do not match: "
+            f"expected={expected_counts}, actual={actual_counts}"
+        )
+
+    print("\nDHT record counts:", flush=True)
+    for peer_id, count in enumerate(actual_counts):
+        peer_name = state["ring"][peer_id][0]
+        print(f"Peer {peer_id} ({peer_name}): {count} records", flush=True)
+
+    print(f"Total stored: {sum(actual_counts)}", flush=True)
 
 def next_prime(number):
     """Helper to return the first prime strictly greater than the number"""
@@ -111,7 +254,8 @@ def main():
                 "id": None,
                 "n": 0,
                 "ring": [],
-                "right": None
+                "right": None,
+                "replies": queue.Queue()
             }
 
             while True:
@@ -175,17 +319,37 @@ def main():
                     if response["status"] == "SUCCESS":
                         ring = response["peers"]
                         print(f"selected ring members: {ring}")
-                        build_ring(p_socket, state, ring)
 
-                        expected_counts = [0] * len(ring)
+                        try:
+                            build_ring(p_socket, state, ring, table_size)
+                            distribute_records(p_socket, state, records)
 
-                        for record in records:
-                            event_id = int(record["EVENT_ID"])
-                            pos = event_id % table_size
-                            owner = pos % len(ring)
-                            expected_counts[owner] += 1
+                            message = {
+                                "command": "dht-complete",
+                                "name": name,
+                            }
+                            data = json.dumps(message).encode("utf-8")
+                            m_socket.sendto(data, manager_address)
+                            print(
+                                f"SEND to manager: {message}",
+                                flush=True,
+                            )
 
-                        print(f"Expected record counts: {expected_counts}")
+                            data, sender = m_socket.recvfrom(65535)
+                            response = json.loads(data.decode("utf-8"))
+                            print(
+                                f"RECV from {sender}: {response}",
+                                flush=True,
+                            )
+
+                            if response["status"] == "SUCCESS":
+                                print("DHT setup complete", flush=True)
+                            else:
+                                print("ERROR: Manager rejected completion")
+
+                        except (OSError, ValueError) as error:
+                            print(f"ERROR: DHT setup stopped: {error}")
+                            print("Restart all programs before retrying")
 
                     continue
 
