@@ -130,7 +130,7 @@ def setup_dht(message, peers, dht):
     }    
 
 def dht_complete(message, dht):
-    """contsruction is marked complete when the leader says so"""
+    """construction is marked complete when the leader says so"""
     if dht["status"] != "Building":
         return {
             "status": "FAILURE",

@@ -36,7 +36,8 @@ def configure_ring(state, peer_id, ring, table_size):
     state["ring"] = ring
     state["right"] = ring[(peer_id + 1) % len(ring)]
     state["table_size"] = table_size
-    state["table"] = [[] for _ in range(table_size)] # each position has a lits to handle hash collisions
+    # each position has a list to handle hash collisions
+    state["table"] = [[] for _ in range(table_size)]
     state["count"] = 0
 
     print(
