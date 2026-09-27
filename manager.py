@@ -152,11 +152,11 @@ def dht_complete(message, dht):
 
 def main():
     if len(sys.argv) != 2:
-        sys.exit("ERROR: Use python3 manager.py <port>")
+        sys.exit("Use python3 manager.py <port>")
 
     port = int(sys.argv[1])
     if not 29500 <= port <= 29999:
-        sys.exit("ERROR: Group 57 must use ports 29500-29999")
+        sys.exit("Group 57 must use ports 29500-29999")
 
     peers = {}
 

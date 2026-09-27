@@ -74,11 +74,11 @@ def listen_to_peers(p_socket, state):
         try:
             message = json.loads(data.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            print("\nERROR: invalid peer message", flush=True)
+            print("\nInvalid peer message", flush=True)
             continue
 
         if not isinstance(message, dict):
-            print("\nERROR: expected json object", flush=True)
+            print("\nExpected json object", flush=True)
             continue
 
         print(f"\nRECV from peer {sender}: {message}", flush=True)
@@ -121,7 +121,7 @@ def listen_to_peers(p_socket, state):
                 send_right(p_socket, state, reply)
 
             elif state["id"] == 0:
-                print("ERROR: Unstored record returned to leader", flush=True)
+                print("Unstored record returned to leader", flush=True)
 
             else:
                 send_right(p_socket, state, message)
@@ -137,7 +137,7 @@ def listen_to_peers(p_socket, state):
                 send_right(p_socket, state, message)
 
         else:
-            print("ERROR: unknown peer command", flush=True)
+            print("Unknown peer command", flush=True)
 
 def build_ring(p_socket, state, ring, table_size):
     """configure all the peers before record distribution"""
@@ -240,7 +240,7 @@ def load_records(year):
 
 def main():
     if len(sys.argv) != 3:
-        sys.exit("ERROR: Use python3 peer.py <manager-ip> <manager-port>")
+        sys.exit("Use python3 peer.py <manager-ip> <manager-port>")
 
     manager_ip = sys.argv[1]
     manager_port = int(sys.argv[2])
@@ -269,26 +269,26 @@ def main():
 
                 if command == "setup-dht":
                     if not registered:
-                        print("ERROR: you need to register first")
+                        print("You need to register first")
                         continue
                     if len(parts) != 4:
-                        print("ERROR: use setup-dht <peer-name> <n> <year>")
+                        print("Use setup-dht <peer-name> <n> <year>")
                         continue
                     if parts[1] != name:
-                        print("ERROR: use this peer's registered name")
+                        print("Use this peer's registered name")
                         continue
 
                     try:
                         n = int(parts[2])
                         year = int(parts[3])
                     except ValueError:
-                        print("ERROR: size and year must be integers")
+                        print("Size and year must be integers")
                         continue
 
                     try:
                         records, table_size = load_records(year)
                     except (OSError, csv.Error) as error:
-                        print(f"ERROR: Could not read dataset: {error}")
+                        print(f"Could not read dataset: {error}")
                         continue
 
                     print(
@@ -311,7 +311,7 @@ def main():
                     try:
                         data, sender = m_socket.recvfrom(65535)
                     except socket.timeout:
-                        print("ERROR: no response from the manager")
+                        print("No response from the manager")
                         continue
     
                     response = json.loads(data.decode("utf-8"))
@@ -346,16 +346,16 @@ def main():
                             if response["status"] == "SUCCESS":
                                 print("DHT setup complete", flush=True)
                             else:
-                                print("ERROR: Manager rejected completion")
+                                print("Manager rejected completion")
 
                         except (OSError, ValueError) as error:
-                            print(f"ERROR: DHT setup stopped: {error}")
+                            print(f"DHT setup stopped: {error}")
                             print("Restart all programs before retrying")
 
                     continue
 
                 if command != "register":
-                    print("ERROR: unknown command")
+                    print("Unknown command")
                     continue
 
                 if len(parts) != 5:
@@ -410,7 +410,7 @@ def main():
                 try:
                     data, sender = m_socket.recvfrom(65535)
                 except socket.timeout:
-                    print("ERROR: no response. check manager")
+                    print("No response. check manager")
                     return
 
                 response = json.loads(data.decode("utf-8"))
@@ -427,7 +427,7 @@ def main():
                     )
                     listener.start()
                 else:
-                    print("ERROR: registration failed. correct the values")
+                    print("Registration failed. correct the values")
                     return
 
 if __name__ == "__main__":
