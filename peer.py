@@ -84,7 +84,7 @@ def main():
                     print("ERROR: no response. check manager")
                     return
 
-                response = json.loads(data.decode("utr-8"))
+                response = json.loads(data.decode("utf-8"))
                 print(f"RECV from {sender}: {response}", flush=True)
 
                 if response["status"] == "SUCCESS":
