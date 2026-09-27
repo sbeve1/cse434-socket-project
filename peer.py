@@ -141,7 +141,7 @@ def listen_to_peers(p_socket, state):
 
 def build_ring(p_socket, state, ring, table_size):
     """configure all the peers before record distribution"""
-    configure_ring(state, 0, ring)
+    configure_ring(state, 0, ring, table_size)
 
 
     # working backward to ensure right is already configured
