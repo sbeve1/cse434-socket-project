@@ -170,7 +170,48 @@ def query_dht(message, peers, dht):
         "status": "SUCCESS",
         "peer": [selected, peer["ip"], peer["p_port"]]
     }
-    
+
+def teardown_dht(message, dht):
+    """allow the leader to begin deleting the DHT"""
+    if dht["status"] != "Ready":
+        return {
+            "status": "FAILURE",
+            "reason": "DHT is not ready"
+        }
+
+    if message.get("name") != dht["leader"]:
+        return {
+            "status": "FAILURE",
+            "reason": "only the leader can tear down the DHT"
+        }
+
+    dht["status"] = "TearingDown"
+    return {"status": "SUCCESS"}
+
+
+def teardown_complete(message, peers, dht):
+    """release the members after the leader confirms deletion"""
+    if dht["status"] != "TearingDown":
+        return {
+            "status": "FAILURE",
+            "reason": "no teardown is in progress"
+        }
+
+    if message.get("name") != dht["leader"]:
+        return {
+            "status": "FAILURE",
+            "reason": "only the leader can complete teardown"
+        }
+
+    for peer_name in dht["members"]:
+        peers[peer_name]["state"] = "Free"
+
+    dht["status"] = "None"
+    dht["leader"] = None
+    dht["members"] = []
+    dht["year"] = None
+
+    return {"status": "SUCCESS"}
 
 def main():
     if len(sys.argv) != 2:
@@ -215,9 +256,24 @@ def main():
                             "status": "FAILURE",
                             "reason": "Waiting for dht-complete"
                         }
+
+                    elif (
+                        dht["status"] == "TearingDown"
+                        and command != "teardown-complete"
+                    ):
+                        response = {
+                            "status": "FAILURE",
+                            "reason": "Waiting for teardown-complete"
+                        }
                     elif command == "register":
                         response = register(message, peers, port)
-                    elif command in ("setup-dht", "dht-complete", "query-dht"):
+                    elif command in (
+                        "setup-dht",
+                        "dht-complete",
+                        "query-dht",
+                        "teardown-dht",
+                        "teardown-complete"
+                    ):
                         # check that the request is from a named peer
                         if not isinstance(name, str) or name not in peers:
                             response = {
@@ -233,6 +289,10 @@ def main():
                             response = setup_dht(message, peers, dht)
                         elif command == "query-dht":
                             response = query_dht(message, peers, dht)
+                        elif command == "teardown-dht":
+                            response = teardown_dht(message, dht)
+                        elif command == "teardown-complete":
+                            response = teardown_complete(message, peers, dht)
                         else:
                             response = dht_complete(message, dht)
 
