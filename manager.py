@@ -147,7 +147,29 @@ def dht_complete(message, dht):
         "status": "SUCCESS"
     }
     
+def query_dht(message, peers, dht):
+    """give a free peer a random DHT member to contact"""
+    name = message.get("name")
 
+    if dht["status"] != "Ready":
+        return {
+            "status": "FAILURE",
+            "reason": "DHT is not ready"
+        }
+
+    if peers[name]["state"] != "Free":
+        return {
+            "status": "FAILURE",
+            "reason": "only a Free peer can query the DHT"
+        }
+
+    selected = random.choice(dht["members"])
+    peer = peers[selected]
+
+    return {
+        "status": "SUCCESS",
+        "peer": [selected, peer["ip"], peer["p_port"]]
+    }
     
 
 def main():
@@ -195,7 +217,7 @@ def main():
                         }
                     elif command == "register":
                         response = register(message, peers, port)
-                    elif command in ("setup-dht", "dht-complete"):
+                    elif command in ("setup-dht", "dht-complete", "query-dht"):
                         # check that the request is from a named peer
                         if not isinstance(name, str) or name not in peers:
                             response = {
@@ -209,6 +231,8 @@ def main():
                             }
                         elif command == "setup-dht":
                             response = setup_dht(message, peers, dht)
+                        elif command == "query-dht":
+                            response = query_dht(message, peers, dht)
                         else:
                             response = dht_complete(message, dht)
 
