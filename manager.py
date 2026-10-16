@@ -213,6 +213,19 @@ def teardown_complete(message, peers, dht):
 
     return {"status": "SUCCESS"}
 
+def deregister(message, peers):
+    """remove a free peer from the manager's records"""
+    name = message["name"]
+
+    if peers[name]["state"] != "Free":
+        return {
+            "status": "FAILURE",
+            "reason": "only a Free peer can deregister"
+        }
+
+    del peers[name]
+    return {"status": "SUCCESS"}
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("Use python3 manager.py <port>")
@@ -272,7 +285,8 @@ def main():
                         "dht-complete",
                         "query-dht",
                         "teardown-dht",
-                        "teardown-complete"
+                        "teardown-complete",
+                        "deregister"
                     ):
                         # check that the request is from a named peer
                         if not isinstance(name, str) or name not in peers:
@@ -293,6 +307,8 @@ def main():
                             response = teardown_dht(message, dht)
                         elif command == "teardown-complete":
                             response = teardown_complete(message, peers, dht)
+                        elif command == "deregister":
+                            response = deregister(message, peers)
                         else:
                             response = dht_complete(message, dht)
 
