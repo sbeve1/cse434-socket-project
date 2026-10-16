@@ -4,6 +4,7 @@ import sys
 import threading
 import csv
 import queue
+import random
 
 def send_peer(p_socket, address, message):
     """encode and send a peer message"""
@@ -63,6 +64,43 @@ def store_local(state, pos, record):
         f"at peer={state['id']}, position={pos}",
         flush=True,
     )
+
+def find_event(p_socket, state, message):
+    """search locally, then pass the query to a random unvisited peer"""
+    event_id = message["event_id"]
+    pos = event_id % state["table_size"]
+
+    visited = message["id_seq"]
+    visited.append(state["id"])
+
+    record = None
+    for entry in state["table"][pos]:
+        if int(entry["EVENT_ID"]) == event_id:
+            record = entry
+            break
+
+    remaining = []
+    for peer_id in range(state["n"]):
+        if peer_id not in visited:
+            remaining.append(peer_id)
+
+    if record is not None or not remaining:
+        reply = {
+            "command": "find-event-result",
+            "event_id": event_id,
+            "status": "SUCCESS" if record is not None else "FAILURE",
+            "id_seq": visited
+        }
+
+        if record is not None:
+            reply["record"] = record
+
+        requester_name, requester_ip, requester_port = message["requester"]
+        send_peer(p_socket, (requester_ip, requester_port), reply)
+    else:
+        next_id = random.choice(remaining)
+        next_name, next_ip, next_port = state["ring"][next_id]
+        send_peer(p_socket, (next_ip, next_port), message)
 
 def listen_to_peers(p_socket, state):
     """handle peer messages while the main thread accepts commands"""
@@ -136,6 +174,12 @@ def listen_to_peers(p_socket, state):
                     "count": state["count"]
                 })
                 send_right(p_socket, state, message)
+
+        elif command == "find-event":
+            find_event(p_socket, state, message)
+
+        elif command == "find-event-result":
+            state["replies"].put(message)
 
         else:
             print("Unknown peer command", flush=True)
@@ -267,6 +311,75 @@ def main():
                     continue
 
                 command = parts[0]
+
+                if command == "query-dht":
+                    if not registered:
+                        print("You need to register first")
+                        continue
+
+                    if len(parts) != 2:
+                        print("Use query-dht <peer-name>")
+                        continue
+
+                    if parts[1] != name:
+                        print("Use this peer's registered name")
+                        continue
+
+                    message = {
+                        "command": "query-dht",
+                        "name": name
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("No response from the manager")
+                        continue
+
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+
+                    if response["status"] != "SUCCESS":
+                        print(response.get("reason", "Query denied"))
+                        continue
+
+                    try:
+                        event_id = int(input("Event ID: "))
+                    except ValueError:
+                        print("Event ID must be an integer")
+                        continue
+
+                    start_name, start_ip, start_port = response["peer"]
+
+                    message = {
+                        "command": "find-event",
+                        "event_id": event_id,
+                        "requester": [name, ip, p_port],
+                        "id_seq": []
+                    }
+
+                    send_peer(p_socket, (start_ip, start_port), message)
+
+                    try:
+                        result = wait_for_reply(
+                            state, "find-event-result", "event_id", event_id
+                        )
+                    except TimeoutError as error:
+                        print(error)
+                        continue
+
+                    if result["status"] == "SUCCESS":
+                        for field, value in result["record"].items():
+                            print(f"{field}: {value}")
+                    else:
+                        print(f"Storm event {event_id} not found in the DHT.")
+
+                    print(f"Visited peer IDs: {result['id_seq']}")
+                    continue
 
                 if command == "setup-dht":
                     if not registered:
