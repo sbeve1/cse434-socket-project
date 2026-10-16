@@ -226,6 +226,83 @@ def deregister(message, peers):
     del peers[name]
     return {"status": "SUCCESS"}
 
+def leave_dht(message, peers, dht):
+    """approve a member leaving and remember the expected new ring"""
+    name = message["name"]
+
+    if dht["status"] != "Ready":
+        return {
+            "status": "FAILURE",
+            "reason": "DHT is not ready"
+        }
+
+    if name not in dht["members"]:
+        return {
+            "status": "FAILURE",
+            "reason": "peer is not in the DHT"
+        }
+
+    members = dht["members"]
+    index = members.index(name)
+
+    # the departing peer's right neighbor becomes the new leader
+    remaining = members[index + 1:] + members[:index]
+
+    if not remaining:
+        return {
+            "status": "FAILURE",
+            "reason": "cannot leave an empty DHT"
+        }
+
+    dht["status"] = "Rebuilding"
+    dht["requester"] = name
+    dht["pending_members"] = remaining
+
+    return {
+        "status": "SUCCESS",
+        "year": dht["year"]
+    }
+
+
+def dht_rebuilt(message, peers, dht):
+    """update membership after the requesting peer confirms rebuilding"""
+    if dht["status"] != "Rebuilding":
+        return {
+            "status": "FAILURE",
+            "reason": "no rebuild is in progress"
+        }
+
+    if message.get("name") != dht["requester"]:
+        return {
+            "status": "FAILURE",
+            "reason": "only the requesting peer can confirm rebuilding"
+        }
+
+    members = dht["pending_members"]
+
+    if message.get("new_leader") != members[0]:
+        return {
+            "status": "FAILURE",
+            "reason": "incorrect new leader"
+        }
+
+    for peer_name in dht["members"]:
+        peers[peer_name]["state"] = "Free"
+
+    for peer_name in members:
+        peers[peer_name]["state"] = "InDHT"
+
+    peers[members[0]]["state"] = "Leader"
+
+    dht["members"] = members
+    dht["leader"] = members[0]
+    dht["status"] = "Ready"
+
+    del dht["requester"]
+    del dht["pending_members"]
+
+    return {"status": "SUCCESS"}
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("Use python3 manager.py <port>")
@@ -278,6 +355,14 @@ def main():
                             "status": "FAILURE",
                             "reason": "Waiting for teardown-complete"
                         }
+                    elif (
+                        dht["status"] == "Rebuilding"
+                        and command != "dht-rebuilt"
+                    ):
+                        response = {
+                            "status": "FAILURE",
+                            "reason": "Waiting for dht-rebuilt"
+                        }
                     elif command == "register":
                         response = register(message, peers, port)
                     elif command in (
@@ -286,7 +371,9 @@ def main():
                         "query-dht",
                         "teardown-dht",
                         "teardown-complete",
-                        "deregister"
+                        "deregister",
+                        "leave-dht",
+                        "dht-rebuilt",
                     ):
                         # check that the request is from a named peer
                         if not isinstance(name, str) or name not in peers:
@@ -309,6 +396,10 @@ def main():
                             response = teardown_complete(message, peers, dht)
                         elif command == "deregister":
                             response = deregister(message, peers)
+                        elif command == "leave-dht":
+                            response = leave_dht(message, peers, dht)
+                        elif command == "dht-rebuilt":
+                            response = dht_rebuilt(message, peers, dht)
                         else:
                             response = dht_complete(message, dht)
 
