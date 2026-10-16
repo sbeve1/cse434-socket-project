@@ -102,6 +102,23 @@ def find_event(p_socket, state, message):
         next_name, next_ip, next_port = state["ring"][next_id]
         send_peer(p_socket, (next_ip, next_port), message)
 
+def delete_local_table(state):
+    """delete stored records while keeping the ring information"""
+    state["table"] = []
+    state["count"] = 0
+    print(f"Deleted local hash table at peer {state['id']}", flush=True)
+
+
+def teardown_ring(p_socket, state):
+    """send teardown around the ring and wait for it to return"""
+    message = {
+        "command": "teardown",
+        "origin": state["id"]
+    }
+
+    send_right(p_socket, state, message)
+    wait_for_reply(state, "teardown", "origin", state["id"])
+
 def listen_to_peers(p_socket, state):
     """handle peer messages while the main thread accepts commands"""
     while True:
@@ -180,6 +197,14 @@ def listen_to_peers(p_socket, state):
 
         elif command == "find-event-result":
             state["replies"].put(message)
+
+        elif command == "teardown":
+            delete_local_table(state)
+
+            if state["id"] == message["origin"]:
+                state["replies"].put(message)
+            else:
+                send_right(p_socket, state, message)
 
         else:
             print("Unknown peer command", flush=True)
@@ -311,6 +336,106 @@ def main():
                     continue
 
                 command = parts[0]
+
+                if command == "teardown-dht":
+                    if not registered:
+                        print("You need to register first")
+                        continue
+
+                    if len(parts) != 2:
+                        print("Use teardown-dht <peer-name>")
+                        continue
+
+                    if parts[1] != name:
+                        print("Use this peer's registered name")
+                        continue
+
+                    message = {
+                        "command": "teardown-dht",
+                        "name": name
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("No response from the manager")
+                        continue
+
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+
+                    if response["status"] != "SUCCESS":
+                        print(response.get("reason", "Teardown denied"))
+                        continue
+
+                    try:
+                        teardown_ring(p_socket, state)
+
+                        message = {
+                            "command": "teardown-complete",
+                            "name": name
+                        }
+
+                        data = json.dumps(message).encode("utf-8")
+                        m_socket.sendto(data, manager_address)
+                        print(f"SEND to manager: {message}", flush=True)
+
+                        data, sender = m_socket.recvfrom(65535)
+                        response = json.loads(data.decode("utf-8"))
+                        print(f"RECV from {sender}: {response}", flush=True)
+
+                        if response["status"] == "SUCCESS":
+                            print("DHT teardown complete", flush=True)
+                        else:
+                            print(response.get("reason", "Completion denied"))
+
+                    except OSError as error:
+                        print(f"DHT teardown stopped: {error}")
+                        print("Restart all programs before retrying")
+
+                    continue
+
+                if command == "deregister":
+                    if not registered:
+                        print("You need to register first")
+                        continue
+
+                    if len(parts) != 2:
+                        print("Use deregister <peer-name>")
+                        continue
+
+                    if parts[1] != name:
+                        print("Use this peer's registered name")
+                        continue
+
+                    message = {
+                        "command": "deregister",
+                        "name": name
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("No response from the manager")
+                        continue
+
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+
+                    if response["status"] == "SUCCESS":
+                        print(f"{name} deregistered. Exiting.", flush=True)
+                        return
+
+                    print(response.get("reason", "Deregistration denied"))
+                    continue
 
                 if command == "query-dht":
                     if not registered:
