@@ -339,6 +339,7 @@ def listen_to_peers(p_socket, state):
             own_peer = state["ring"][state["id"]]
 
             if own_peer[0] == message["origin"][0]:
+                # reset id is returned to its origin. this confirmation stays inside this process
                 state["replies"].put({
                     "command": "reset-complete"
                 })
@@ -362,7 +363,7 @@ def listen_to_peers(p_socket, state):
                 )
 
         elif command == "rebuild-dht":
-            # keep the listener available for storage confirmations
+            # use a worker so the listener can still receive the confirmations it waits for
             worker = threading.Thread(
                 target=rebuild_records,
                 args=(p_socket, state, message),

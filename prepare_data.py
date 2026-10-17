@@ -1,3 +1,6 @@
+# extract the 14 project fields in the required order from the NOAA details file
+# run from the folder containing the source .csv.gz to create details-1996.csv
+
 import csv
 import gzip
 
