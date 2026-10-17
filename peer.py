@@ -191,6 +191,63 @@ def leave_ring(p_socket, state, year):
 
     return new_leader[0]
 
+def join_ring(p_socket, state, message):
+    """add a peer at the end of the ring and rebuild the DHT"""
+    requester = message["requester"]
+
+    try:
+        records, table_size = load_records(message["year"])
+
+        if table_size != state["table_size"]:
+            raise ValueError("Dataset size differs from the original setup")
+
+        old_right = state["right"]
+        new_ring = state["ring"] + [requester]
+
+        teardown_ring(p_socket, state)
+        configure_ring(state, 0, new_ring, table_size)
+
+        # configure the new peer, whose right neighbor is the leader
+        new_id = len(new_ring) - 1
+        setup = {
+            "command": "set-id",
+            "id": new_id,
+            "n": len(new_ring),
+            "peers": new_ring,
+            "table_size": table_size
+        }
+
+        send_peer(p_socket, (requester[1], requester[2]), setup)
+        wait_for_reply(state, "ready", "id", new_id)
+
+        # update existing peers by following the old ring
+        reset = {
+            "command": "reset-id",
+            "origin": new_ring[0],
+            "next_id": 1,
+            "peers": new_ring,
+            "table_size": table_size
+        }
+
+        send_peer(p_socket, (old_right[1], old_right[2]), reset)
+        wait_for_reply(state, "reset-complete", "command", "reset-complete")
+
+        distribute_records(p_socket, state, records)
+
+        reply = {
+            "command": "join-complete",
+            "status": "SUCCESS"
+        }
+
+    except (OSError, ValueError, csv.Error) as error:
+        reply = {
+            "command": "join-complete",
+            "status": "FAILURE",
+            "reason": str(error)
+        }
+
+    send_peer(p_socket, (requester[1], requester[2]), reply)
+
 def listen_to_peers(p_socket, state):
     """handle peer messages while the main thread accepts commands"""
     while True:
@@ -314,6 +371,17 @@ def listen_to_peers(p_socket, state):
             worker.start()
 
         elif command == "rebuild-complete":
+            state["replies"].put(message)
+
+        elif command == "join-ring":
+            worker = threading.Thread(
+                target=join_ring,
+                args=(p_socket, state, message),
+                daemon=True
+            )
+            worker.start()
+
+        elif command == "join-complete":
             state["replies"].put(message)
 
         else:
@@ -446,6 +514,90 @@ def main():
                     continue
 
                 command = parts[0]
+
+                if command == "join-dht":
+                    if not registered:
+                        print("You need to register first")
+                        continue
+
+                    if len(parts) != 2:
+                        print("Use join-dht <peer-name>")
+                        continue
+
+                    if parts[1] != name:
+                        print("Use this peer's registered name")
+                        continue
+
+                    message = {
+                        "command": "join-dht",
+                        "name": name
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("No response from the manager")
+                        continue
+
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+
+                    if response["status"] != "SUCCESS":
+                        print(response.get("reason", "Join denied"))
+                        continue
+
+                    leader_name, leader_ip, leader_port = response["leader"]
+
+                    message = {
+                        "command": "join-ring",
+                        "requester": [name, ip, p_port],
+                        "year": response["year"]
+                    }
+
+                    try:
+                        send_peer(
+                            p_socket, (leader_ip, leader_port), message
+                        )
+
+                        result = wait_for_reply(
+                            state, "join-complete", "command", "join-complete",
+                            timeout=120
+                        )
+
+                        if result["status"] != "SUCCESS":
+                            raise ValueError(result["reason"])
+
+                        message = {
+                            "command": "dht-rebuilt",
+                            "name": name,
+                            "new_leader": leader_name
+                        }
+
+                        data = json.dumps(message).encode("utf-8")
+                        m_socket.sendto(data, manager_address)
+                        print(f"SEND to manager: {message}", flush=True)
+
+                        data, sender = m_socket.recvfrom(65535)
+                        response = json.loads(data.decode("utf-8"))
+                        print(f"RECV from {sender}: {response}", flush=True)
+
+                        if response["status"] == "SUCCESS":
+                            print(
+                                f"Joined DHT. Leader: {leader_name}",
+                                flush=True
+                            )
+                        else:
+                            print(response.get("reason", "Completion denied"))
+
+                    except (OSError, ValueError) as error:
+                        print(f"Joining DHT stopped: {error}")
+                        print("Restart all programs before retrying")
+
+                    continue
 
                 if command == "leave-dht":
                     if not registered:
