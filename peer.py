@@ -19,11 +19,11 @@ def send_right(p_socket, state, message):
     send_peer(p_socket, (ip, port), message)
 
 
-def wait_for_reply(state, command, key, value):
+def wait_for_reply(state, command, key, value, timeout=5):
     """wait for the listener to deliver the expected confirmation"""
     while True:
         try:
-            message = state["replies"].get(timeout=5)
+            message = state["replies"].get(timeout=timeout)
         except queue.Empty:
             raise TimeoutError(f"No confirmation for {command}: {value}")
 
@@ -119,6 +119,78 @@ def teardown_ring(p_socket, state):
     send_right(p_socket, state, message)
     wait_for_reply(state, "teardown", "origin", state["id"])
 
+def rebuild_records(p_socket, state, message):
+    """reload the dataset and tell the departing peer when finished"""
+    requester_name, requester_ip, requester_port = message["requester"]
+
+    try:
+        records, table_size = load_records(message["year"])
+
+        if table_size != state["table_size"]:
+            raise ValueError("Dataset size differs from the original setup")
+
+        distribute_records(p_socket, state, records)
+
+        reply = {
+            "command": "rebuild-complete",
+            "status": "SUCCESS"
+        }
+    except (OSError, ValueError, csv.Error) as error:
+        reply = {
+            "command": "rebuild-complete",
+            "status": "FAILURE",
+            "reason": str(error)
+        }
+
+    send_peer(p_socket, (requester_ip, requester_port), reply)
+
+
+def leave_ring(p_socket, state, year):
+    """remove this peer and rebuild with its right neighbor as leader"""
+    old_id = state["id"]
+    old_ring = state["ring"]
+    requester = old_ring[old_id]
+
+    new_ring = old_ring[old_id + 1:] + old_ring[:old_id]
+    new_leader = new_ring[0]
+
+    teardown_ring(p_socket, state)
+
+    message = {
+        "command": "reset-id",
+        "origin": requester,
+        "next_id": 0,
+        "peers": new_ring,
+        "table_size": state["table_size"]
+    }
+
+    send_right(p_socket, state, message)
+    wait_for_reply(state, "reset-complete", "command", "reset-complete")
+
+    message = {
+        "command": "rebuild-dht",
+        "year": year,
+        "requester": requester
+    }
+
+    send_peer(p_socket, (new_leader[1], new_leader[2]), message)
+
+    result = wait_for_reply(
+        state, "rebuild-complete", "command", "rebuild-complete",
+        timeout=120
+    )
+
+    if result["status"] != "SUCCESS":
+        raise ValueError(result["reason"])
+
+    state["id"] = None
+    state["n"] = 0
+    state["ring"] = []
+    state["right"] = None
+    state["table_size"] = 0
+
+    return new_leader[0]
+
 def listen_to_peers(p_socket, state):
     """handle peer messages while the main thread accepts commands"""
     while True:
@@ -205,6 +277,44 @@ def listen_to_peers(p_socket, state):
                 state["replies"].put(message)
             else:
                 send_right(p_socket, state, message)
+
+        elif command == "reset-id":
+            own_peer = state["ring"][state["id"]]
+
+            if own_peer[0] == message["origin"][0]:
+                state["replies"].put({
+                    "command": "reset-complete"
+                })
+            else:
+                # forward using the OLD ring so the message returns
+                # to the departing peer even after neighbors change
+                old_right = state["right"]
+
+                configure_ring(
+                    state,
+                    message["next_id"],
+                    message["peers"],
+                    message["table_size"]
+                )
+
+                message["next_id"] += 1
+                send_peer(
+                    p_socket,
+                    (old_right[1], old_right[2]),
+                    message
+                )
+
+        elif command == "rebuild-dht":
+            # keep the listener available for storage confirmations
+            worker = threading.Thread(
+                target=rebuild_records,
+                args=(p_socket, state, message),
+                daemon=True
+            )
+            worker.start()
+
+        elif command == "rebuild-complete":
+            state["replies"].put(message)
 
         else:
             print("Unknown peer command", flush=True)
@@ -336,6 +446,74 @@ def main():
                     continue
 
                 command = parts[0]
+
+                if command == "leave-dht":
+                    if not registered:
+                        print("You need to register first")
+                        continue
+
+                    if len(parts) != 2:
+                        print("Use leave-dht <peer-name>")
+                        continue
+
+                    if parts[1] != name:
+                        print("Use this peer's registered name")
+                        continue
+
+                    message = {
+                        "command": "leave-dht",
+                        "name": name
+                    }
+
+                    data = json.dumps(message).encode("utf-8")
+                    m_socket.sendto(data, manager_address)
+                    print(f"SEND to manager: {message}", flush=True)
+
+                    try:
+                        data, sender = m_socket.recvfrom(65535)
+                    except socket.timeout:
+                        print("No response from the manager")
+                        continue
+
+                    response = json.loads(data.decode("utf-8"))
+                    print(f"RECV from {sender}: {response}", flush=True)
+
+                    if response["status"] != "SUCCESS":
+                        print(response.get("reason", "Leave denied"))
+                        continue
+
+                    try:
+                        new_leader = leave_ring(
+                            p_socket, state, response["year"]
+                        )
+
+                        message = {
+                            "command": "dht-rebuilt",
+                            "name": name,
+                            "new_leader": new_leader
+                        }
+
+                        data = json.dumps(message).encode("utf-8")
+                        m_socket.sendto(data, manager_address)
+                        print(f"SEND to manager: {message}", flush=True)
+
+                        data, sender = m_socket.recvfrom(65535)
+                        response = json.loads(data.decode("utf-8"))
+                        print(f"RECV from {sender}: {response}", flush=True)
+
+                        if response["status"] == "SUCCESS":
+                            print(
+                                f"Left DHT. New leader: {new_leader}",
+                                flush=True
+                            )
+                        else:
+                            print(response.get("reason", "Completion denied"))
+
+                    except (OSError, ValueError) as error:
+                        print(f"Leaving DHT stopped: {error}")
+                        print("Restart all programs before retrying")
+
+                    continue
 
                 if command == "teardown-dht":
                     if not registered:
