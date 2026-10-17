@@ -303,6 +303,35 @@ def dht_rebuilt(message, peers, dht):
 
     return {"status": "SUCCESS"}
 
+def join_dht(message, peers, dht):
+    """approve a free peer joining the existing DHT"""
+    name = message["name"]
+
+    if dht["status"] != "Ready":
+        return {
+            "status": "FAILURE",
+            "reason": "DHT is not ready"
+        }
+
+    if peers[name]["state"] != "Free":
+        return {
+            "status": "FAILURE",
+            "reason": "only a Free peer can join the DHT"
+        }
+
+    dht["status"] = "Rebuilding"
+    dht["requester"] = name
+    dht["pending_members"] = dht["members"] + [name]
+
+    leader_name = dht["leader"]
+    leader = peers[leader_name]
+
+    return {
+        "status": "SUCCESS",
+        "leader": [leader_name, leader["ip"], leader["p_port"]],
+        "year": dht["year"]
+    }
+
 def main():
     if len(sys.argv) != 2:
         sys.exit("Use python3 manager.py <port>")
@@ -373,7 +402,8 @@ def main():
                         "teardown-complete",
                         "deregister",
                         "leave-dht",
-                        "dht-rebuilt",
+                        "join-dht",
+                        "dht-rebuilt"
                     ):
                         # check that the request is from a named peer
                         if not isinstance(name, str) or name not in peers:
@@ -400,6 +430,8 @@ def main():
                             response = leave_dht(message, peers, dht)
                         elif command == "dht-rebuilt":
                             response = dht_rebuilt(message, peers, dht)
+                        elif command == "join-dht":
+                            response = join_dht(message, peers, dht)
                         else:
                             response = dht_complete(message, dht)
 
